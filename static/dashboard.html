@@ -92,8 +92,10 @@
 
 <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
 <script>
+  const esc = s => s == null ? '—' : String(s)
+    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   const fmt = iso => iso ? new Date(iso).toLocaleString('es-ES') : '—';
-  const fmtDate = iso => iso ? iso.slice(0, 10) : '—';
+  const fmtDate = iso => iso ? esc(iso.slice(0, 10)) : '—';
   const fmtMoney = n => n != null ? Number(n).toLocaleString('es-ES', {minimumFractionDigits: 2}) : '—';
   const empty = (id, cols) => document.getElementById(id).innerHTML =
     `<tr><td colspan="${cols}" class="empty-msg">Sin datos</td></tr>`;
@@ -111,29 +113,29 @@
 
   function loadAll() {
     load('/api/empresas', 'tbody-empresas', r =>
-      `<tr><td>${r.id}</td><td>${r.codigo}</td><td>${r.nombre}</td>
-       <td><span class="badge bg-secondary badge-agent">${r.agent_id ?? '—'}</span></td>
+      `<tr><td>${r.id}</td><td>${esc(r.codigo)}</td><td>${esc(r.nombre)}</td>
+       <td><span class="badge bg-secondary badge-agent">${esc(r.agent_id)}</span></td>
        <td>${fmt(r.received_at)}</td></tr>`, 5);
 
     load('/api/asientos', 'tbody-asientos', r =>
-      `<tr><td>${r.id}</td><td>${r.codigo_empresa}</td><td>${fmtDate(r.fecha)}</td>
-       <td>${r.descripcion}</td><td class="text-end">${fmtMoney(r.importe)}</td>
-       <td><span class="badge bg-secondary badge-agent">${r.agent_id ?? '—'}</span></td>
+      `<tr><td>${r.id}</td><td>${esc(r.codigo_empresa)}</td><td>${fmtDate(r.fecha)}</td>
+       <td>${esc(r.descripcion)}</td><td class="text-end">${fmtMoney(r.importe)}</td>
+       <td><span class="badge bg-secondary badge-agent">${esc(r.agent_id)}</span></td>
        <td>${fmt(r.received_at)}</td></tr>`, 7);
 
     load('/api/nominas', 'tbody-nominas', r =>
-      `<tr><td>${r.id}</td><td>${r.codigo_empresa}</td><td>${r.codigo_empleado}</td>
-       <td>${r.nombre_empleado}</td><td>${r.periodo}</td>
+      `<tr><td>${r.id}</td><td>${esc(r.codigo_empresa)}</td><td>${esc(r.codigo_empleado)}</td>
+       <td>${esc(r.nombre_empleado)}</td><td>${esc(r.periodo)}</td>
        <td class="text-end">${fmtMoney(r.importe_neto)}</td>
-       <td><span class="badge bg-secondary badge-agent">${r.agent_id ?? '—'}</span></td>
+       <td><span class="badge bg-secondary badge-agent">${esc(r.agent_id)}</span></td>
        <td>${fmt(r.received_at)}</td></tr>`, 8);
 
     load('/api/diagnostic', 'tbody-diagnostic', r => {
-      const dsns = tryParse(r.odbc_dsns).map(d => d.name || d).join(', ') || '—';
-      const paths = tryParse(r.install_paths).join(', ') || '—';
+      const dsns = tryParse(r.odbc_dsns).map(d => esc(d.name || d)).join(', ') || '—';
+      const paths = tryParse(r.install_paths).map(esc).join(', ') || '—';
       return `<tr>
-        <td><span class="badge bg-secondary badge-agent">${r.agent_id ?? '—'}</span></td>
-        <td>${r.machine_name ?? '—'}</td><td>${r.os_version ?? '—'}</td>
+        <td><span class="badge bg-secondary badge-agent">${esc(r.agent_id)}</span></td>
+        <td>${esc(r.machine_name)}</td><td>${esc(r.os_version)}</td>
         <td>${dsns}</td><td>${paths}</td>
         <td>${fmt(r.received_at)}</td></tr>`;
     }, 6);

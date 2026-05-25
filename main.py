@@ -119,7 +119,15 @@ app = FastAPI(title="A3 API", version="0.3.0", lifespan=lifespan)
 
 @app.get("/", dependencies=[Depends(verify_credentials)], include_in_schema=False)
 async def dashboard():
-    return FileResponse(STATIC_DIR / "dashboard.html")
+    response = FileResponse(STATIC_DIR / "dashboard.html")
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    response.headers["Content-Security-Policy"] = (
+        "default-src 'self'; "
+        "script-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'; "
+        "style-src 'self' https://cdn.jsdelivr.net 'unsafe-inline'"
+    )
+    return response
 
 
 @app.get("/api/empresas", dependencies=[Depends(verify_credentials)])
@@ -242,7 +250,7 @@ async def diagnostic(
         try:
             ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
         except (ValueError, AttributeError):
-            pass
+            logger.warning("Agent=%s | Could not parse timestamp: %r", x_agent_id, raw_ts)
 
     async with _pool.acquire() as conn:
         await conn.execute(

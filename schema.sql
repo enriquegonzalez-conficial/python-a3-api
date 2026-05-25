@@ -45,3 +45,9 @@ CREATE TABLE IF NOT EXISTS diagnostic_reports (
     install_paths   JSONB,
     received_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
+
+-- Índices para las queries del dashboard (ORDER BY received_at DESC)
+CREATE INDEX IF NOT EXISTS idx_empresas_received_at        ON empresas(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_asientos_received_at        ON asientos(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_nominas_received_at         ON nominas(received_at DESC);
+CREATE INDEX IF NOT EXISTS idx_diagnostic_received_at      ON diagnostic_reports(received_at DESC);
