@@ -1,14 +1,20 @@
+from __future__ import annotations
+
 import json
 import logging
 import os
+import secrets
 from contextlib import asynccontextmanager
 from datetime import date, datetime
 from decimal import Decimal
+from pathlib import Path
 from typing import Any, Optional
 
 import asyncpg
 from dotenv import load_dotenv
-from fastapi import FastAPI, Header
+from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
@@ -16,6 +22,8 @@ load_dotenv()
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+STATIC_DIR = Path(__file__).parent / "static"
 
 _pool: asyncpg.Pool | None = None
 
@@ -28,6 +36,22 @@ async def lifespan(app: FastAPI):
     yield
     await _pool.close()
     logger.info("Database pool closed")
+
+
+# --- Auth ---
+
+security = HTTPBasic()
+
+
+def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
+    ok_user = secrets.compare_digest(
+        credentials.username, os.environ.get("DASHBOARD_USER", "")
+    )
+    ok_pass = secrets.compare_digest(
+        credentials.password, os.environ.get("DASHBOARD_PASSWORD", "")
+    )
+    if not (ok_user and ok_pass):
+        raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Basic"})
 
 
 # --- Shared base ---
@@ -72,10 +96,65 @@ class DiagnosticResponse(BaseModel):
     status: str
 
 
+# --- Helpers ---
+
+def _serialize(row: dict) -> dict:
+    result = {}
+    for key, val in row.items():
+        if isinstance(val, Decimal):
+            result[key] = float(val)
+        elif isinstance(val, (date, datetime)):
+            result[key] = val.isoformat()
+        else:
+            result[key] = val
+    return result
+
+
 # --- App ---
 
-app = FastAPI(title="A3 API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="A3 API", version="0.3.0", lifespan=lifespan)
 
+
+# ── Dashboard ────────────────────────────────────────────────────────────────
+
+@app.get("/", dependencies=[Depends(verify_credentials)], include_in_schema=False)
+async def dashboard():
+    return FileResponse(STATIC_DIR / "dashboard.html")
+
+
+@app.get("/api/empresas", dependencies=[Depends(verify_credentials)])
+async def get_empresas(limit: int = 200):
+    rows = await _pool.fetch(
+        "SELECT * FROM empresas ORDER BY received_at DESC LIMIT $1", limit
+    )
+    return [_serialize(dict(r)) for r in rows]
+
+
+@app.get("/api/asientos", dependencies=[Depends(verify_credentials)])
+async def get_asientos(limit: int = 200):
+    rows = await _pool.fetch(
+        "SELECT * FROM asientos ORDER BY received_at DESC LIMIT $1", limit
+    )
+    return [_serialize(dict(r)) for r in rows]
+
+
+@app.get("/api/nominas", dependencies=[Depends(verify_credentials)])
+async def get_nominas(limit: int = 200):
+    rows = await _pool.fetch(
+        "SELECT * FROM nominas ORDER BY received_at DESC LIMIT $1", limit
+    )
+    return [_serialize(dict(r)) for r in rows]
+
+
+@app.get("/api/diagnostic", dependencies=[Depends(verify_credentials)])
+async def get_diagnostic(limit: int = 50):
+    rows = await _pool.fetch(
+        "SELECT * FROM diagnostic_reports ORDER BY received_at DESC LIMIT $1", limit
+    )
+    return [_serialize(dict(r)) for r in rows]
+
+
+# ── Ingest (sin dashboard auth — usan X-Agent-Id) ───────────────────────────
 
 @app.get("/health")
 async def health() -> dict:

@@ -1,0 +1,154 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>A3Conficial — Dashboard</title>
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <style>
+    body { background: #f8f9fa; }
+    .navbar { background: #1a1a2e !important; }
+    .navbar-brand { color: #e0e0e0 !important; font-weight: 600; letter-spacing: .5px; }
+    .table-wrapper { overflow-x: auto; }
+    .badge-agent { font-size: .7rem; }
+    #last-updated { font-size: .8rem; color: #6c757d; }
+    .tab-content { background: #fff; border: 1px solid #dee2e6; border-top: 0; border-radius: 0 0 .375rem .375rem; padding: 1rem; }
+    .empty-msg { color: #adb5bd; text-align: center; padding: 2rem 0; }
+  </style>
+</head>
+<body>
+
+<nav class="navbar navbar-dark mb-4">
+  <div class="container-fluid">
+    <span class="navbar-brand">A3Conficial — Dashboard</span>
+    <div class="d-flex align-items-center gap-3">
+      <span id="last-updated"></span>
+      <button class="btn btn-sm btn-outline-light" onclick="loadAll()">↻ Actualizar</button>
+    </div>
+  </div>
+</nav>
+
+<div class="container-fluid px-4">
+
+  <ul class="nav nav-tabs" id="mainTabs">
+    <li class="nav-item"><button class="nav-link active" data-bs-toggle="tab" data-bs-target="#tab-empresas">Empresas</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-asientos">Asientos</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-nominas">Nóminas</button></li>
+    <li class="nav-item"><button class="nav-link" data-bs-toggle="tab" data-bs-target="#tab-diagnostic">Diagnóstico</button></li>
+  </ul>
+
+  <div class="tab-content" id="mainTabContent">
+
+    <!-- Empresas -->
+    <div class="tab-pane fade show active" id="tab-empresas">
+      <div class="table-wrapper">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr><th>ID</th><th>Código</th><th>Nombre</th><th>Agent</th><th>Recibido</th></tr>
+          </thead>
+          <tbody id="tbody-empresas"><tr><td colspan="5" class="empty-msg">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Asientos -->
+    <div class="tab-pane fade" id="tab-asientos">
+      <div class="table-wrapper">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr><th>ID</th><th>Empresa</th><th>Fecha</th><th>Descripción</th><th class="text-end">Importe</th><th>Agent</th><th>Recibido</th></tr>
+          </thead>
+          <tbody id="tbody-asientos"><tr><td colspan="7" class="empty-msg">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Nóminas -->
+    <div class="tab-pane fade" id="tab-nominas">
+      <div class="table-wrapper">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr><th>ID</th><th>Empresa</th><th>Empleado</th><th>Nombre</th><th>Periodo</th><th class="text-end">Neto</th><th>Agent</th><th>Recibido</th></tr>
+          </thead>
+          <tbody id="tbody-nominas"><tr><td colspan="8" class="empty-msg">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Diagnóstico -->
+    <div class="tab-pane fade" id="tab-diagnostic">
+      <div class="table-wrapper">
+        <table class="table table-sm table-hover align-middle mb-0">
+          <thead class="table-light">
+            <tr><th>Agent</th><th>Máquina</th><th>OS</th><th>DSNs ODBC</th><th>Rutas A3</th><th>Recibido</th></tr>
+          </thead>
+          <tbody id="tbody-diagnostic"><tr><td colspan="6" class="empty-msg">Cargando…</td></tr></tbody>
+        </table>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+<script>
+  const fmt = iso => iso ? new Date(iso).toLocaleString('es-ES') : '—';
+  const fmtDate = iso => iso ? iso.slice(0, 10) : '—';
+  const fmtMoney = n => n != null ? Number(n).toLocaleString('es-ES', {minimumFractionDigits: 2}) : '—';
+  const empty = (id, cols) => document.getElementById(id).innerHTML =
+    `<tr><td colspan="${cols}" class="empty-msg">Sin datos</td></tr>`;
+
+  async function load(url, tbodyId, renderFn, emptyCols) {
+    try {
+      const res = await fetch(url);
+      if (!res.ok) { empty(tbodyId, emptyCols); return; }
+      const data = await res.json();
+      const tbody = document.getElementById(tbodyId);
+      if (!data.length) { empty(tbodyId, emptyCols); return; }
+      tbody.innerHTML = data.map(renderFn).join('');
+    } catch { empty(tbodyId, emptyCols); }
+  }
+
+  function loadAll() {
+    load('/api/empresas', 'tbody-empresas', r =>
+      `<tr><td>${r.id}</td><td>${r.codigo}</td><td>${r.nombre}</td>
+       <td><span class="badge bg-secondary badge-agent">${r.agent_id ?? '—'}</span></td>
+       <td>${fmt(r.received_at)}</td></tr>`, 5);
+
+    load('/api/asientos', 'tbody-asientos', r =>
+      `<tr><td>${r.id}</td><td>${r.codigo_empresa}</td><td>${fmtDate(r.fecha)}</td>
+       <td>${r.descripcion}</td><td class="text-end">${fmtMoney(r.importe)}</td>
+       <td><span class="badge bg-secondary badge-agent">${r.agent_id ?? '—'}</span></td>
+       <td>${fmt(r.received_at)}</td></tr>`, 7);
+
+    load('/api/nominas', 'tbody-nominas', r =>
+      `<tr><td>${r.id}</td><td>${r.codigo_empresa}</td><td>${r.codigo_empleado}</td>
+       <td>${r.nombre_empleado}</td><td>${r.periodo}</td>
+       <td class="text-end">${fmtMoney(r.importe_neto)}</td>
+       <td><span class="badge bg-secondary badge-agent">${r.agent_id ?? '—'}</span></td>
+       <td>${fmt(r.received_at)}</td></tr>`, 8);
+
+    load('/api/diagnostic', 'tbody-diagnostic', r => {
+      const dsns = tryParse(r.odbc_dsns).map(d => d.name || d).join(', ') || '—';
+      const paths = tryParse(r.install_paths).join(', ') || '—';
+      return `<tr>
+        <td><span class="badge bg-secondary badge-agent">${r.agent_id ?? '—'}</span></td>
+        <td>${r.machine_name ?? '—'}</td><td>${r.os_version ?? '—'}</td>
+        <td>${dsns}</td><td>${paths}</td>
+        <td>${fmt(r.received_at)}</td></tr>`;
+    }, 6);
+
+    document.getElementById('last-updated').textContent =
+      'Actualizado: ' + new Date().toLocaleTimeString('es-ES');
+  }
+
+  function tryParse(val) {
+    if (!val) return [];
+    try { return typeof val === 'string' ? JSON.parse(val) : val; }
+    catch { return []; }
+  }
+
+  loadAll();
+</script>
+</body>
+</html>
