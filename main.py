@@ -1,14 +1,33 @@
+import json
 import logging
-from datetime import date
+import os
+from contextlib import asynccontextmanager
+from datetime import date, datetime
 from decimal import Decimal
-from typing import Optional
+from typing import Any, Optional
 
+import asyncpg
+from dotenv import load_dotenv
 from fastapi import FastAPI, Header
 from pydantic import BaseModel, ConfigDict
 from pydantic.alias_generators import to_camel
 
+load_dotenv()
+
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger(__name__)
+
+_pool: asyncpg.Pool | None = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global _pool
+    _pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=5)
+    logger.info("Database pool ready")
+    yield
+    await _pool.close()
+    logger.info("Database pool closed")
 
 
 # --- Shared base ---
@@ -42,16 +61,20 @@ class Nomina(CamelModel):
     importe_neto: Decimal
 
 
-# --- Response model ---
+# --- Response models ---
 
 class IngestResponse(BaseModel):
     status: str
     received: int
 
 
+class DiagnosticResponse(BaseModel):
+    status: str
+
+
 # --- App ---
 
-app = FastAPI(title="A3 Mock API", version="0.1.0")
+app = FastAPI(title="A3 API", version="0.2.0", lifespan=lifespan)
 
 
 @app.get("/health")
@@ -64,9 +87,17 @@ async def ingest_empresas(
     empresas: list[Empresa],
     x_agent_id: Optional[str] = Header(default=None),
 ) -> IngestResponse:
-    logger.info("Agent=%s | Received %d empresas", x_agent_id, len(empresas))
-    for e in empresas:
-        logger.info("  [empresa] id=%d codigo=%s nombre=%s", e.id, e.codigo, e.nombre)
+    logger.info("Agent=%s | %d empresas", x_agent_id, len(empresas))
+    async with _pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO empresas (id, agent_id, codigo, nombre)
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (id, agent_id) DO UPDATE
+                SET codigo = EXCLUDED.codigo, nombre = EXCLUDED.nombre
+            """,
+            [(e.id, x_agent_id, e.codigo, e.nombre) for e in empresas],
+        )
     return IngestResponse(status="ok", received=len(empresas))
 
 
@@ -75,11 +106,20 @@ async def ingest_asientos(
     asientos: list[Asiento],
     x_agent_id: Optional[str] = Header(default=None),
 ) -> IngestResponse:
-    logger.info("Agent=%s | Received %d asientos", x_agent_id, len(asientos))
-    for a in asientos:
-        logger.info(
-            "  [asiento] id=%d empresa=%s fecha=%s desc=%s importe=%.2f",
-            a.id, a.codigo_empresa, a.fecha, a.descripcion, a.importe,
+    logger.info("Agent=%s | %d asientos", x_agent_id, len(asientos))
+    async with _pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO asientos (id, agent_id, codigo_empresa, fecha, descripcion, importe)
+            VALUES ($1, $2, $3, $4, $5, $6)
+            ON CONFLICT (id, agent_id) DO UPDATE
+                SET codigo_empresa = EXCLUDED.codigo_empresa,
+                    fecha          = EXCLUDED.fecha,
+                    descripcion    = EXCLUDED.descripcion,
+                    importe        = EXCLUDED.importe
+            """,
+            [(a.id, x_agent_id, a.codigo_empresa, a.fecha, a.descripcion, a.importe)
+             for a in asientos],
         )
     return IngestResponse(status="ok", received=len(asientos))
 
@@ -89,10 +129,58 @@ async def ingest_nominas(
     nominas: list[Nomina],
     x_agent_id: Optional[str] = Header(default=None),
 ) -> IngestResponse:
-    logger.info("Agent=%s | Received %d nominas", x_agent_id, len(nominas))
-    for n in nominas:
-        logger.info(
-            "  [nomina] id=%d empleado=%s nombre=%s periodo=%s neto=%.2f",
-            n.id, n.codigo_empleado, n.nombre_empleado, n.periodo, n.importe_neto,
+    logger.info("Agent=%s | %d nominas", x_agent_id, len(nominas))
+    async with _pool.acquire() as conn:
+        await conn.executemany(
+            """
+            INSERT INTO nominas
+                (id, agent_id, codigo_empresa, codigo_empleado, nombre_empleado, periodo, importe_neto)
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            ON CONFLICT (id, agent_id) DO UPDATE
+                SET codigo_empresa  = EXCLUDED.codigo_empresa,
+                    codigo_empleado = EXCLUDED.codigo_empleado,
+                    nombre_empleado = EXCLUDED.nombre_empleado,
+                    periodo         = EXCLUDED.periodo,
+                    importe_neto    = EXCLUDED.importe_neto
+            """,
+            [(n.id, x_agent_id, n.codigo_empresa, n.codigo_empleado,
+              n.nombre_empleado, n.periodo, n.importe_neto)
+             for n in nominas],
         )
     return IngestResponse(status="ok", received=len(nominas))
+
+
+@app.post("/diagnostic", response_model=DiagnosticResponse)
+async def diagnostic(
+    report: dict[str, Any],
+    x_agent_id: Optional[str] = Header(default=None),
+) -> DiagnosticResponse:
+    logger.info("Agent=%s | Diagnostic from %s", x_agent_id, report.get("machineName"))
+
+    raw_ts = report.get("timestamp")
+    ts: datetime | None = None
+    if raw_ts:
+        try:
+            ts = datetime.fromisoformat(raw_ts.replace("Z", "+00:00"))
+        except (ValueError, AttributeError):
+            pass
+
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO diagnostic_reports
+                (agent_id, machine_name, os_version, agent_timestamp,
+                 executables, scheduled_tasks, com_prog_ids, odbc_dsns, install_paths)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            """,
+            x_agent_id,
+            report.get("machineName"),
+            report.get("osVersion"),
+            ts,
+            json.dumps(report.get("executables", [])),
+            json.dumps(report.get("scheduledTasks", [])),
+            json.dumps(report.get("comProgIds", [])),
+            json.dumps(report.get("odbcDsns", [])),
+            json.dumps(report.get("installPaths", [])),
+        )
+    return DiagnosticResponse(status="ok")
