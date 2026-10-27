@@ -162,6 +162,14 @@ async def get_diagnostic(limit: int = 50):
     return [_serialize(dict(r)) for r in rows]
 
 
+@app.get("/api/discovery", dependencies=[Depends(verify_credentials)])
+async def get_discovery(limit: int = 10):
+    rows = await _pool.fetch(
+        "SELECT * FROM discovery_reports ORDER BY received_at DESC LIMIT $1", limit
+    )
+    return [_serialize(dict(r)) for r in rows]
+
+
 # ── Ingest (sin dashboard auth — usan X-Agent-Id) ───────────────────────────
 
 @app.get("/health")
@@ -269,5 +277,27 @@ async def diagnostic(
             json.dumps(report.get("comProgIds", [])),
             json.dumps(report.get("odbcDsns", [])),
             json.dumps(report.get("installPaths", [])),
+        )
+    return DiagnosticResponse(status="ok")
+
+
+@app.post("/discovery", response_model=DiagnosticResponse)
+async def discovery(
+    report: dict[str, Any],
+    x_agent_id: Optional[str] = Header(default=None),
+) -> DiagnosticResponse:
+    machine = (report.get("diagnostic") or {}).get("machineName")
+    logger.info("Agent=%s | Discovery from %s, %d sources",
+                x_agent_id, machine, len(report.get("sources", [])))
+
+    async with _pool.acquire() as conn:
+        await conn.execute(
+            """
+            INSERT INTO discovery_reports (agent_id, machine_name, report)
+            VALUES ($1, $2, $3)
+            """,
+            x_agent_id,
+            machine,
+            json.dumps(report),
         )
     return DiagnosticResponse(status="ok")
