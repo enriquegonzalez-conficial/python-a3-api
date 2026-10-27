@@ -1,0 +1,32 @@
+# Especificación de la app en DigitalOcean App Platform.
+# Crear:      doctl apps create --spec .do/app.yaml
+# Actualizar: doctl apps update <APP_ID> --spec .do/app.yaml
+# Los valores SECRET no van aquí: se rellenan en la consola de DO
+# (App → Settings → Environment Variables) después de crearla.
+name: a3-conficial
+services:
+  - name: api
+    github:
+      repo: enriquegonzalez-conficial/python-a3-api
+      branch: main
+      deploy_on_push: true
+    environment_slug: python
+    # El comando de arranque sale del Procfile; DO pone PORT=8080.
+    http_port: 8080
+    instance_size_slug: apps-s-1vcpu-0.5gb
+    instance_count: 1
+    health_check:
+      http_path: /health
+    envs:
+      - key: DATABASE_URL
+        scope: RUN_TIME
+        type: SECRET
+      - key: DASHBOARD_USER
+        scope: RUN_TIME
+        type: SECRET
+      - key: DASHBOARD_PASSWORD
+        scope: RUN_TIME
+        type: SECRET
+      - key: AGENT_CREDENTIALS
+        scope: RUN_TIME
+        type: SECRET

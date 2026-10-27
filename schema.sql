@@ -1,4 +1,4 @@
--- Ejecutar una sola vez contra la base de datos a3_conficial
+-- La API lo aplica en cada arranque: todo debe ser idempotente (IF NOT EXISTS)
 
 CREATE TABLE IF NOT EXISTS empresas (
     id          INTEGER     NOT NULL,

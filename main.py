@@ -24,6 +24,7 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 logger = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+SCHEMA_FILE = Path(__file__).parent / "schema.sql"
 
 _pool: asyncpg.Pool | None = None
 
@@ -32,7 +33,10 @@ _pool: asyncpg.Pool | None = None
 async def lifespan(app: FastAPI):
     global _pool
     _pool = await asyncpg.create_pool(os.environ["DATABASE_URL"], min_size=1, max_size=5)
-    logger.info("Database pool ready")
+    # schema.sql solo usa CREATE ... IF NOT EXISTS: aplicarlo en cada arranque
+    # crea lo que falte sin tocar lo que ya existe.
+    await _pool.execute(SCHEMA_FILE.read_text())
+    logger.info("Database pool ready, schema applied")
     yield
     await _pool.close()
     logger.info("Database pool closed")
@@ -52,6 +56,24 @@ def verify_credentials(credentials: HTTPBasicCredentials = Depends(security)):
     )
     if not (ok_user and ok_pass):
         raise HTTPException(status_code=401, headers={"WWW-Authenticate": "Basic"})
+
+
+def _agent_credentials() -> dict[str, str]:
+    """AGENT_CREDENTIALS="agente1:secreto1,agente2:secreto2" (una pareja por agente)."""
+    pairs = (item.split(":", 1) for item in os.environ.get("AGENT_CREDENTIALS", "").split(",") if ":" in item)
+    return {agent.strip(): secret.strip() for agent, secret in pairs}
+
+
+def verify_agent(
+    x_agent_id: Optional[str] = Header(default=None),
+    x_agent_secret: Optional[str] = Header(default=None),
+):
+    # Sin AGENT_CREDENTIALS configurado no entra nadie (falla cerrado).
+    expected = _agent_credentials().get(x_agent_id or "")
+    if expected is None or not secrets.compare_digest(
+        (x_agent_secret or "").encode(), expected.encode()
+    ):
+        raise HTTPException(status_code=401)
 
 
 # --- Shared base ---
@@ -170,14 +192,14 @@ async def get_discovery(limit: int = 10):
     return [_serialize(dict(r)) for r in rows]
 
 
-# ── Ingest (sin dashboard auth — usan X-Agent-Id) ───────────────────────────
+# ── Ingest (auth por X-Agent-Id + X-Agent-Secret) ────────────────────────────
 
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.post("/ingest/empresas", response_model=IngestResponse)
+@app.post("/ingest/empresas", response_model=IngestResponse, dependencies=[Depends(verify_agent)])
 async def ingest_empresas(
     empresas: list[Empresa],
     x_agent_id: Optional[str] = Header(default=None),
@@ -196,7 +218,7 @@ async def ingest_empresas(
     return IngestResponse(status="ok", received=len(empresas))
 
 
-@app.post("/ingest/asientos", response_model=IngestResponse)
+@app.post("/ingest/asientos", response_model=IngestResponse, dependencies=[Depends(verify_agent)])
 async def ingest_asientos(
     asientos: list[Asiento],
     x_agent_id: Optional[str] = Header(default=None),
@@ -219,7 +241,7 @@ async def ingest_asientos(
     return IngestResponse(status="ok", received=len(asientos))
 
 
-@app.post("/ingest/nominas", response_model=IngestResponse)
+@app.post("/ingest/nominas", response_model=IngestResponse, dependencies=[Depends(verify_agent)])
 async def ingest_nominas(
     nominas: list[Nomina],
     x_agent_id: Optional[str] = Header(default=None),
@@ -245,7 +267,7 @@ async def ingest_nominas(
     return IngestResponse(status="ok", received=len(nominas))
 
 
-@app.post("/diagnostic", response_model=DiagnosticResponse)
+@app.post("/diagnostic", response_model=DiagnosticResponse, dependencies=[Depends(verify_agent)])
 async def diagnostic(
     report: dict[str, Any],
     x_agent_id: Optional[str] = Header(default=None),
@@ -281,7 +303,7 @@ async def diagnostic(
     return DiagnosticResponse(status="ok")
 
 
-@app.post("/discovery", response_model=DiagnosticResponse)
+@app.post("/discovery", response_model=DiagnosticResponse, dependencies=[Depends(verify_agent)])
 async def discovery(
     report: dict[str, Any],
     x_agent_id: Optional[str] = Header(default=None),
