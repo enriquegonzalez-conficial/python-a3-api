@@ -8,14 +8,14 @@ from contextlib import asynccontextmanager
 from datetime import date, datetime
 from decimal import Decimal
 from pathlib import Path
-from typing import Any, Optional
+from typing import Annotated, Any, List, Literal, Optional
 
 import asyncpg
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.responses import FileResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 from pydantic.alias_generators import to_camel
 
 load_dotenv()
@@ -323,3 +323,223 @@ async def discovery(
             json.dumps(report),
         )
     return DiagnosticResponse(status="ok")
+
+
+# ── Contabilidad (ingesta por ámbito: cada envío sustituye el anterior) ──────
+
+Importe = Annotated[Decimal, Field(max_digits=14, decimal_places=2)]
+Mes = Annotated[int, Field(ge=1, le=12)]
+Ejercicio = Annotated[int, Field(ge=1900, le=2200)]
+Huella = Annotated[str, Field(pattern=r"^[0-9a-fA-F]{64}$")]
+Doce = Annotated[List[Importe], Field(min_length=12, max_length=12)]
+
+
+class Apunte(CamelModel):
+    fecha: date
+    asiento: int
+    num_lin: int
+    tipo_linea: int
+    num_dh: int = Field(alias="numDH")  # el contrato dice numDH, no numDh
+    cuenta: Optional[str] = None
+    concepto: Optional[str] = None
+    documento: Optional[str] = None
+    debe_haber: Literal["D", "H"]
+    importe: Importe
+
+
+class Factura(CamelModel):
+    tipo: str
+    fecha: date
+    num_lin: int
+    cuenta: Optional[str] = None
+    documento: Optional[str] = None
+    porcentaje_iva: Annotated[Decimal, Field(max_digits=5, decimal_places=2)]
+    base: Importe
+    iva: Importe
+    irpf: Importe
+
+
+class ContabilidadMes(CamelModel):
+    empresa: str = Field(min_length=1)
+    ejercicio: Ejercicio
+    mes: Mes
+    huella: Huella
+    apuntes: List[Apunte]
+    facturas: List[Factura]
+
+
+class Cuenta(CamelModel):
+    codigo: str
+    nombre: str
+    es_grupo: bool
+    debe: Doce
+    haber: Doce
+
+
+class ContabilidadCuentas(CamelModel):
+    empresa: str = Field(min_length=1)
+    ejercicio: Ejercicio
+    huella: Huella
+    cuentas: List[Cuenta]
+
+
+class Vencimiento(CamelModel):
+    cobro_pago: Literal["C", "P"]
+    fecha: date
+    num_lin: int
+    importe: Importe
+
+
+class ContabilidadVencimientos(CamelModel):
+    empresa: str = Field(min_length=1)
+    huella: Huella
+    vencimientos: List[Vencimiento]
+
+
+class ContabilidadResponse(BaseModel):
+    recibidos: int
+    sustituidos: int
+
+
+def _deleted(status: str) -> int:
+    """asyncpg devuelve 'DELETE n' al ejecutar un DELETE."""
+    return int(status.split()[-1])
+
+
+async def _registrar_envio(conn, empresa: str, ambito: str, ejercicio: int, mes: int,
+                           agent_id: Optional[str], huella: str) -> None:
+    await conn.execute(
+        "DELETE FROM contabilidad_envios "
+        "WHERE empresa = $1 AND ambito = $2 AND ejercicio = $3 AND mes = $4",
+        empresa, ambito, ejercicio, mes,
+    )
+    await conn.execute(
+        "INSERT INTO contabilidad_envios (empresa, ambito, ejercicio, mes, agent_id, huella) "
+        "VALUES ($1, $2, $3, $4, $5, $6)",
+        empresa, ambito, ejercicio, mes, agent_id, huella,
+    )
+
+
+@app.post("/ingest/contabilidad/mes", response_model=ContabilidadResponse,
+          dependencies=[Depends(verify_agent)])
+async def ingest_contabilidad_mes(
+    body: ContabilidadMes,
+    x_agent_id: Optional[str] = Header(default=None),
+) -> ContabilidadResponse:
+    logger.info("Agent=%s | contabilidad %s %d-%02d: %d apuntes, %d facturas",
+                x_agent_id, body.empresa, body.ejercicio, body.mes,
+                len(body.apuntes), len(body.facturas))
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            borrados = _deleted(await conn.execute(
+                "DELETE FROM apuntes WHERE empresa = $1 AND ejercicio = $2 AND mes = $3",
+                body.empresa, body.ejercicio, body.mes,
+            ))
+            borrados += _deleted(await conn.execute(
+                "DELETE FROM facturas WHERE empresa = $1 AND ejercicio = $2 AND mes = $3",
+                body.empresa, body.ejercicio, body.mes,
+            ))
+            await conn.executemany(
+                """
+                INSERT INTO apuntes (empresa, ejercicio, mes, fecha, asiento, num_lin, tipo_linea,
+                                     num_dh, cuenta, concepto, documento, debe_haber, importe)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+                """,
+                [(body.empresa, body.ejercicio, body.mes, a.fecha, a.asiento, a.num_lin,
+                  a.tipo_linea, a.num_dh, a.cuenta, a.concepto, a.documento, a.debe_haber,
+                  a.importe) for a in body.apuntes],
+            )
+            await conn.executemany(
+                """
+                INSERT INTO facturas (empresa, ejercicio, mes, tipo, fecha, num_lin, cuenta,
+                                      documento, porcentaje_iva, base, iva, irpf)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                """,
+                [(body.empresa, body.ejercicio, body.mes, f.tipo, f.fecha, f.num_lin, f.cuenta,
+                  f.documento, f.porcentaje_iva, f.base, f.iva, f.irpf) for f in body.facturas],
+            )
+            await _registrar_envio(conn, body.empresa, "mes", body.ejercicio, body.mes,
+                                   x_agent_id, body.huella)
+    return ContabilidadResponse(recibidos=len(body.apuntes) + len(body.facturas),
+                                sustituidos=borrados)
+
+
+@app.post("/ingest/contabilidad/cuentas", response_model=ContabilidadResponse,
+          dependencies=[Depends(verify_agent)])
+async def ingest_contabilidad_cuentas(
+    body: ContabilidadCuentas,
+    x_agent_id: Optional[str] = Header(default=None),
+) -> ContabilidadResponse:
+    logger.info("Agent=%s | contabilidad %s %d: %d cuentas",
+                x_agent_id, body.empresa, body.ejercicio, len(body.cuentas))
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            borrados = _deleted(await conn.execute(
+                "DELETE FROM cuentas WHERE empresa = $1 AND ejercicio = $2",
+                body.empresa, body.ejercicio,
+            ))
+            await conn.executemany(
+                """
+                INSERT INTO cuentas (empresa, ejercicio, codigo, nombre, es_grupo, debe, haber)
+                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                """,
+                [(body.empresa, body.ejercicio, c.codigo, c.nombre, c.es_grupo, c.debe, c.haber)
+                 for c in body.cuentas],
+            )
+            await _registrar_envio(conn, body.empresa, "cuentas", body.ejercicio, 0,
+                                   x_agent_id, body.huella)
+    return ContabilidadResponse(recibidos=len(body.cuentas), sustituidos=borrados)
+
+
+@app.post("/ingest/contabilidad/vencimientos", response_model=ContabilidadResponse,
+          dependencies=[Depends(verify_agent)])
+async def ingest_contabilidad_vencimientos(
+    body: ContabilidadVencimientos,
+    x_agent_id: Optional[str] = Header(default=None),
+) -> ContabilidadResponse:
+    logger.info("Agent=%s | contabilidad %s: %d vencimientos",
+                x_agent_id, body.empresa, len(body.vencimientos))
+    async with _pool.acquire() as conn:
+        async with conn.transaction():
+            borrados = _deleted(await conn.execute(
+                "DELETE FROM vencimientos WHERE empresa = $1", body.empresa,
+            ))
+            await conn.executemany(
+                """
+                INSERT INTO vencimientos (empresa, cobro_pago, fecha, num_lin, importe)
+                VALUES ($1, $2, $3, $4, $5)
+                """,
+                [(body.empresa, v.cobro_pago, v.fecha, v.num_lin, v.importe)
+                 for v in body.vencimientos],
+            )
+            await _registrar_envio(conn, body.empresa, "vencimientos", 0, 0,
+                                   x_agent_id, body.huella)
+    return ContabilidadResponse(recibidos=len(body.vencimientos), sustituidos=borrados)
+
+
+@app.get("/api/contabilidad/resumen", dependencies=[Depends(verify_credentials)])
+async def get_contabilidad_resumen(empresa: str = Query(min_length=1), ejercicio: Ejercicio = Query()):
+    apuntes = await _pool.fetch(
+        """
+        SELECT mes,
+               COUNT(*) AS n,
+               COALESCE(SUM(importe) FILTER (WHERE debe_haber = 'D'), 0) AS debe,
+               COALESCE(SUM(importe) FILTER (WHERE debe_haber = 'H'), 0) AS haber
+        FROM apuntes WHERE empresa = $1 AND ejercicio = $2 GROUP BY mes
+        """,
+        empresa, ejercicio,
+    )
+    facturas = await _pool.fetch(
+        """
+        SELECT mes, COUNT(*) AS n, COALESCE(SUM(base), 0) AS base, COALESCE(SUM(iva), 0) AS iva
+        FROM facturas WHERE empresa = $1 AND ejercicio = $2 GROUP BY mes
+        """,
+        empresa, ejercicio,
+    )
+    por_mes = {m: {"mes": m, "apuntes": 0, "debe": 0.0, "haber": 0.0,
+                   "facturas": 0, "base": 0.0, "iva": 0.0} for m in range(1, 13)}
+    for r in apuntes:
+        por_mes[r["mes"]].update(apuntes=r["n"], debe=float(r["debe"]), haber=float(r["haber"]))
+    for r in facturas:
+        por_mes[r["mes"]].update(facturas=r["n"], base=float(r["base"]), iva=float(r["iva"]))
+    return {"empresa": empresa, "ejercicio": ejercicio, "meses": list(por_mes.values())}
