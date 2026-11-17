@@ -334,7 +334,12 @@ Huella = Annotated[str, Field(pattern=r"^[0-9a-fA-F]{64}$")]
 Doce = Annotated[List[Importe], Field(min_length=12, max_length=12)]
 
 
-class Apunte(CamelModel):
+class Estricto(CamelModel):
+    # Un campo con otro nombre no se pierde en silencio: la ingesta lo rechaza con 422.
+    model_config = ConfigDict(alias_generator=to_camel, populate_by_name=True, extra="forbid")
+
+
+class Apunte(Estricto):
     fecha: date
     asiento: int
     num_lin: int
@@ -347,7 +352,7 @@ class Apunte(CamelModel):
     importe: Importe
 
 
-class Factura(CamelModel):
+class Factura(Estricto):
     tipo: str
     fecha: date
     num_lin: int
@@ -357,9 +362,10 @@ class Factura(CamelModel):
     base: Importe
     iva: Importe
     irpf: Importe
+    tipo_operacion: Annotated[int, Field(ge=0, le=99)]  # 1, 3, 4, 6… (0 en las líneas A)
 
 
-class ContabilidadMes(CamelModel):
+class ContabilidadMes(Estricto):
     empresa: str = Field(min_length=1)
     ejercicio: Ejercicio
     mes: Mes
@@ -368,7 +374,7 @@ class ContabilidadMes(CamelModel):
     facturas: List[Factura]
 
 
-class Cuenta(CamelModel):
+class Cuenta(Estricto):
     codigo: str
     nombre: str
     es_grupo: bool
@@ -376,21 +382,21 @@ class Cuenta(CamelModel):
     haber: Doce
 
 
-class ContabilidadCuentas(CamelModel):
+class ContabilidadCuentas(Estricto):
     empresa: str = Field(min_length=1)
     ejercicio: Ejercicio
     huella: Huella
     cuentas: List[Cuenta]
 
 
-class Vencimiento(CamelModel):
+class Vencimiento(Estricto):
     cobro_pago: Literal["C", "P"]
     fecha: date
     num_lin: int
     importe: Importe
 
 
-class ContabilidadVencimientos(CamelModel):
+class ContabilidadVencimientos(Estricto):
     empresa: str = Field(min_length=1)
     huella: Huella
     vencimientos: List[Vencimiento]
@@ -452,11 +458,11 @@ async def ingest_contabilidad_mes(
             await conn.executemany(
                 """
                 INSERT INTO facturas (empresa, ejercicio, mes, tipo, fecha, num_lin, cuenta,
-                                      documento, porcentaje_iva, base, iva, irpf)
-                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                                      documento, porcentaje_iva, base, iva, irpf, tipo_operacion)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
                 """,
                 [(body.empresa, body.ejercicio, body.mes, f.tipo, f.fecha, f.num_lin, f.cuenta,
-                  f.documento, f.porcentaje_iva, f.base, f.iva, f.irpf) for f in body.facturas],
+                  f.documento, f.porcentaje_iva, f.base, f.iva, f.irpf, f.tipo_operacion) for f in body.facturas],
             )
             await _registrar_envio(conn, body.empresa, "mes", body.ejercicio, body.mes,
                                    x_agent_id, body.huella)

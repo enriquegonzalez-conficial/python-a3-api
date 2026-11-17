@@ -130,7 +130,8 @@ def apunte(**extra):
 
 def factura(**extra):
     base = {"tipo": "R", "fecha": "2026-05-20", "numLin": 100100, "cuenta": "410000010000",
-            "documento": "F-1", "porcentajeIva": 21.00, "base": 9.36, "iva": 1.97, "irpf": 0.00}
+            "documento": "F-1", "porcentajeIva": 21.00, "base": 9.36, "iva": 1.97, "irpf": 0.00,
+            "tipoOperacion": 1}
     return {**base, **extra}
 
 
@@ -418,3 +419,31 @@ def test_resumen_junta_apuntes_y_facturas_por_mes(pool):
 def test_resumen_pide_empresa_y_ejercicio(pool):
     assert client.get("/api/contabilidad/resumen", params={"ejercicio": 2026}, auth=DASHBOARD).status_code == 422
     assert client.get("/api/contabilidad/resumen", params={"empresa": "00569"}, auth=DASHBOARD).status_code == 422
+
+
+# --- Lo que trajo el cuadre con Biloop y el QA de integración ---
+
+def test_guarda_el_tipo_de_operacion_de_cada_factura(pool):
+    r = enviar_mes(facturas=[factura(tipoOperacion=6)])
+
+    assert r.status_code == 200
+    assert pool.tables["facturas"][0]["tipo_operacion"] == 6
+
+
+def test_factura_sin_tipo_de_operacion_es_422(pool):
+    sin = factura()
+    del sin["tipoOperacion"]
+    assert enviar_mes(facturas=[sin]).status_code == 422
+
+
+@pytest.mark.parametrize("donde", ["apunte", "factura", "mes"])
+def test_un_campo_desconocido_se_rechaza_en_vez_de_perderse(pool, donde):
+    body = mes_body()
+    if donde == "apunte":
+        body["apuntes"] = [apunte(cuentaX="465000000000")]
+    elif donde == "factura":
+        body["facturas"] = [factura(baseImponible=9.36)]
+    else:
+        body["periodo"] = 5
+    r = client.post("/ingest/contabilidad/mes", json=body, headers=AGENTE)
+    assert r.status_code == 422

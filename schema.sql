@@ -87,8 +87,10 @@ CREATE TABLE IF NOT EXISTS facturas (
     porcentaje_iva NUMERIC(5,2)  NOT NULL,
     base           NUMERIC(14,2) NOT NULL,
     iva            NUMERIC(14,2) NOT NULL,
-    irpf           NUMERIC(14,2) NOT NULL
+    irpf           NUMERIC(14,2) NOT NULL,
+    tipo_operacion SMALLINT      NOT NULL DEFAULT 0
 );
+ALTER TABLE facturas ADD COLUMN IF NOT EXISTS tipo_operacion SMALLINT NOT NULL DEFAULT 0;
 
 -- cuentas: ámbito (empresa, ejercicio); debe y haber son 12 importes (enero..diciembre).
 CREATE TABLE IF NOT EXISTS cuentas (
